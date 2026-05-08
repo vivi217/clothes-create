@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #1d1d1f;
+  background-color: #f4efe7;
+  font-family: 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+* {
+  box-sizing: border-box;
+}

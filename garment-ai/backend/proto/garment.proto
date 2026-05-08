@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package garment;
+
+option go_package = "garment-ai/backend/proto;garmentpb";
+
+service GarmentService {
+  rpc GeneratePattern(GeneratePatternRequest) returns (GeneratePatternResponse);
+  rpc Generate3DModel(Generate3DRequest) returns (Generate3DResponse);
+}
+
+message GeneratePatternRequest {
+  string params_json = 1;
+}
+
+message GeneratePatternResponse {
+  int32 code = 1;
+  string message = 2;
+  string pattern_json = 3;
+  string dxf_url = 4;
+}
+
+message Generate3DRequest {
+  string params_json = 1;
+}
+
+message Generate3DResponse {
+  int32 code = 1;
+  string message = 2;
+  string glb_url = 3;
+}

@@ -1,0 +1,204 @@
+services:
+  postgres:
+    image: postgres:15.5
+    container_name: garment-ai-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.2.4
+    container_name: garment-ai-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: garment-ai-minio
+    command: server /data --console-address ":${MINIO_CONSOLE_PORT:-9001}"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:${MINIO_CONSOLE_PORT:-9001}"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.12
+    container_name: garment-ai-etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: 1000
+      ETCD_QUOTA_BACKEND_BYTES: 4294967296
+      ETCD_SNAPSHOT_COUNT: 50000
+    command: >-
+      etcd
+      --advertise-client-urls=http://etcd:2379
+      --listen-client-urls=http://0.0.0.0:2379
+      --data-dir=/etcd
+    ports:
+      - "${ETCD_CLIENT_PORT:-2379}:2379"
+    volumes:
+      - etcd-data:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  milvus:
+    image: milvusdb/milvus:v2.3.3
+    container_name: garment-ai-milvus
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "${MILVUS_PORT:-19530}:19530"
+      - "${MILVUS_HTTP_PORT:-9091}:9091"
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - milvus-data:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: garment-ai-backend
+    environment:
+      APP_ENV: ${APP_ENV}
+      PORT: ${BACKEND_PORT:-8080}
+      POSTGRES_DSN: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_ENDPOINT: localhost:${MINIO_API_PORT:-9000}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      MILVUS_ADDRESS: milvus:19530
+      ENGINE_BASE_URL: http://engine:8010
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+
+  ai:
+    build:
+      context: ./ai
+      dockerfile: Dockerfile
+    container_name: garment-ai-ai
+    environment:
+      APP_ENV: ${APP_ENV}
+      PORT: ${AI_PORT:-8000}
+      MILVUS_ADDRESS: milvus:19530
+      QWEN_MODEL: ${QWEN_MODEL}
+      QWEN_BASE_URL: ${QWEN_BASE_URL}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      AI_CACHE_TTL_SECONDS: ${AI_CACHE_TTL_SECONDS:-900}
+      MILVUS_COLLECTION_NAME: ${MILVUS_COLLECTION_NAME:-garment_style_templates}
+      MILVUS_SEARCH_LIMIT: ${MILVUS_SEARCH_LIMIT:-5}
+      CLIP_MODEL_NAME: ${CLIP_MODEL_NAME:-openai/clip-vit-base-patch32}
+      CLIP_MODEL_CACHE_DIR: ${CLIP_MODEL_CACHE_DIR:-/app/models/clip-cache}
+      YOLO_SEG_MODEL_PATH: ${YOLO_SEG_MODEL_PATH:-/app/models/yolov8-seg.pt}
+      YOLO_SEG_MODEL_URL: ${YOLO_SEG_MODEL_URL:-https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n-seg.pt}
+      PREPROCESS_CANVAS_SIZE: ${PREPROCESS_CANVAS_SIZE:-1280}
+    ports:
+      - "${AI_PORT:-8000}:8000"
+    volumes:
+      - ./ai/models:/app/models
+    depends_on:
+      minio:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+
+  engine:
+    build:
+      context: ./engine
+      dockerfile: Dockerfile
+    container_name: garment-ai-engine
+    environment:
+      APP_ENV: ${APP_ENV}
+      PORT: ${ENGINE_PORT:-8010}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_ENDPOINT: localhost:${MINIO_API_PORT:-9000}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+    ports:
+      - "${ENGINE_PORT:-8010}:8010"
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: garment-ai-frontend
+    environment:
+      VITE_BACKEND_BASE_URL: http://localhost:${BACKEND_PORT:-8080}
+      VITE_AI_BASE_URL: http://localhost:${AI_PORT:-8000}
+      VITE_ENGINE_BASE_URL: http://localhost:${ENGINE_PORT:-8010}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_started
+      ai:
+        condition: service_started
+      engine:
+        condition: service_started
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  etcd-data:
+  milvus-data:
